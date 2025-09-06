@@ -18,7 +18,7 @@ class GoogleImageSearcher:
         self.base_url = "https://www.googleapis.com/customsearch/v1"
     
     def search_character_image(self, character_name: str) -> Optional[str]:
-        """Search for character image and return the first result URL with resolution > 500x500"""
+        """Search for character image and return the first result URL with resolution > 250x250"""
         try:
             params = {
                 'key': self.api_key,
@@ -32,7 +32,7 @@ class GoogleImageSearcher:
                 'rights': 'cc_publicdomain,cc_attribute,cc_sharealike'
             }
 
-            print(params)
+            print(f"Searching for: {character_name}")
             
             response = requests.get(self.base_url, params=params)
             response.raise_for_status()
@@ -40,7 +40,7 @@ class GoogleImageSearcher:
             data = response.json()
             
             if 'items' in data and len(data['items']) > 0:
-                # Filter images with resolution > 500x500
+                # Filter images with resolution > 250x250
                 valid_images = []
                 for item in data['items']:
                     image_info = item.get('image', {})
@@ -52,9 +52,16 @@ class GoogleImageSearcher:
                                 valid_images.append(item)
                         except Exception:
                             continue
+                    else:
+                        # If no size info, include anyway
+                        valid_images.append(item)
+                        
                 if valid_images:
                     random_item = random.choice(valid_images)
                     return random_item['link']
+                elif data['items']:
+                    # Fallback to any image if no size filtering worked
+                    return random.choice(data['items'])['link']
             return None
             
         except Exception as e:
@@ -101,43 +108,60 @@ class ClashOfMemesBot:
     def __init__(self, google_searcher: GoogleImageSearcher):
         self.searcher = google_searcher
         self.extractor = CharacterExtractor()
+        self.reset_conversation_state()
+        # Set up FAL client
+        self.fal_key = os.getenv("FAL_KEY")
+        if not self.fal_key:
+            raise ValueError("FAL_KEY not found in environment variables")
+
+    def reset_conversation_state(self):
+        """Reset the conversation state to initial values"""
         self.conversation_state = {
             "waiting_for_characters": True, 
             "characters": [],
+            "character_images": [],
             "images_loaded": False,
             "waiting_for_confirmation": False
         }
 
-    def generate_battle_scene(self, characters: List[str]) -> str:
-        """Generate a battle scene between two characters"""
+    def generate_battle_scene(self, image_urls: List[str], character_names: List[str]) -> str:
+        """Generate a battle scene between two characters using their images"""
+        try:
+            print(f"Generating battle scene for {character_names}")
+            print(f"Using image URLs: {image_urls}")
+            
+            def on_queue_update(update):
+                if isinstance(update, fal_client.InProgress):
+                    for log in update.logs:
+                        print(log["message"])
+
+            # Create a dynamic prompt based on character names
+            prompt = f"Epic battle scene between {character_names[0]} and {character_names[1]} in a fighting game arena. Dynamic action poses, special effects, energy blasts, dramatic lighting, cinematic composition, high quality anime/comic book style"
+            
+            result = fal_client.subscribe(
+                "fal-ai/nano-banana/edit",
+                arguments={
+                    "prompt": prompt,
+                    "image_urls": image_urls,
+                    "num_images": 1,
+                    "output_format": "jpeg",
+                    "seed": random.randint(1, 10000)
+                },
+                with_logs=True,
+                on_queue_update=on_queue_update,
+            )
+            
+            if result and result["images"] and len(result["images"]) > 0:
+                return result["images"][0]["url"]
+            else:
+                print("No images returned from FAL API")
+                return None
+                
+        except Exception as e:
+            print(f"Error generating battle scene: {e}")
+            return None
     
-
-        FAL_KEY = "2c39734b-d428-401a-8f20-18d44ec7d7d7:e7cf9e41ead942f5314c048554639f64"
-
-        def on_queue_update(update):
-            if isinstance(update, fal_client.InProgress):
-                for log in update.logs:
-                    print(log["message"])
-
-        result = fal_client.subscribe(
-            "fal-ai/nano-banana-edit",
-            arguments={
-                {
-                "prompt": "imagine the characters in the first image and the chracters in second image in a fighting game scene",
-                "image_urls": [
-                    characters[0],
-                    characters[1]
-                ],
-                "num_images": 1,
-                "output_format": "jpeg"
-}
-            },
-            with_logs=True,
-            on_queue_update=on_queue_update,
-        )
-        return result.images[0]["url"]
-    
-    def process_message(self, message: str, history: List) -> Tuple[str, List, Optional[str], Optional[str]]:
+    def process_message(self, message: str, history: List) -> Tuple[str, List, Optional[str], Optional[str], Optional[str]]:
         """Process user message and return response with images"""
         
         message_lower = message.lower().strip()
@@ -150,19 +174,48 @@ class ClashOfMemesBot:
                 response += "⚔️ The battle is about to begin!\n"
                 response += "🎬 Creating cinematic fight sequence...\n"
                 response += "💥 Adding special effects...\n\n"
-                response += "🔧 **Battle generation feature coming soon!**\n"
-                response += "This will create an epic animated battle between your chosen fighters!"
+                response += "⏳ **Please wait while the AI generates your battle scene...**"
+                
+                # Add to history first
+                history.append([message, response])
+                
+                # Generate battle scene
+                battle_image_url = None
+                if len(self.conversation_state["character_images"]) >= 2:
+                    battle_image_url = self.generate_battle_scene(
+                        self.conversation_state["character_images"],
+                        self.conversation_state["characters"]
+                    )
+                
+                if battle_image_url:
+                    final_response = "🎉 **EPIC BATTLE GENERATED!**\n\n"
+                    final_response += f"**{self.conversation_state['characters'][0].title()} VS {self.conversation_state['characters'][1].title()}**\n\n"
+                    final_response += "✨ Your cinematic battle scene is ready!\n"
+                    final_response += "🔥 Witness the ultimate clash!\n\n"
+                    final_response += "Want another battle? Just tell me two new characters!"
+                else:
+                    final_response = "❌ **Battle Generation Failed**\n\n"
+                    final_response += "Sorry, there was an issue generating the battle scene.\n"
+                    final_response += "This could be due to:\n"
+                    final_response += "• API limitations\n"
+                    final_response += "• Image processing issues\n"
+                    final_response += "• Network connectivity\n\n"
+                    final_response += "Try again with the same or different characters!"
+                
+                # Update the last message in history
+                history[-1][1] = final_response
                 
                 # Reset state for new battle
                 self.conversation_state = {
                     "waiting_for_characters": True,
                     "characters": [],
+                    "character_images": [],
                     "images_loaded": False,
                     "waiting_for_confirmation": False
                 }
                 
-                history.append([message, response])
-                return "", history, None, None
+                # Safely return character images - they should be None after reset
+                return "", history, None, None, battle_image_url
                 
             elif any(word in message_lower for word in ["no", "change", "different", "other", "new"]):
                 response = "🔄 **Choose New Fighters!**\n\n"
@@ -173,12 +226,13 @@ class ClashOfMemesBot:
                 self.conversation_state = {
                     "waiting_for_characters": True,
                     "characters": [],
+                    "character_images": [],
                     "images_loaded": False,
                     "waiting_for_confirmation": False
                 }
                 
                 history.append([message, response])
-                return "", history, None, None
+                return "", history, None, None, None
             else:
                 # User didn't give clear yes/no, ask again
                 response = "🤔 **Please choose:**\n\n"
@@ -187,7 +241,7 @@ class ClashOfMemesBot:
                 response += f"Current fighters: **{self.conversation_state['characters'][0].title()}** vs **{self.conversation_state['characters'][1].title()}**"
                 
                 history.append([message, response])
-                return "", history, None, None
+                return "", history, None, None, None
         
         # Extract characters from message
         characters = self.extractor.extract_characters(message)
@@ -209,14 +263,17 @@ class ClashOfMemesBot:
             img1_url = self.searcher.search_character_image(char1)
             img2_url = self.searcher.search_character_image(char2)
             
+            # Store image URLs
+            self.conversation_state["character_images"] = [img1_url, img2_url]
+            
             # Update response based on search results
             if img1_url and img2_url:
                 final_response = f"✅ **Images Found!**\n\n"
                 final_response += f"**Fighter 1:** {char1.title()}\n"
                 final_response += f"**Fighter 2:** {char2.title()}\n\n"
                 final_response += "🖼️ Both character images loaded successfully!\n\n"
-                final_response += "**What would you like to do?**\n"
-                final_response += "• Type **'YES'** or **'CONTINUE'** to generate the epic battle!\n"
+                final_response += "**Ready to generate the epic battle scene?**\n"
+                final_response += "• Type **'YES'** or **'CONTINUE'** to create the battle!\n"
                 final_response += "• Type **'NO'** or **'CHANGE'** to choose different characters"
                 
                 # Set state to wait for confirmation
@@ -227,9 +284,10 @@ class ClashOfMemesBot:
                 final_response = f"⚠️ **Partial Success**\n\n"
                 final_response += f"**Fighter 1:** {char1.title()}\n"
                 final_response += f"**Fighter 2:** {char2.title()}\n\n"
-                final_response += "Found image for one fighter, using placeholder for the other.\n\n"
+                final_response += "Found image for one fighter, but couldn't find the other.\n"
+                final_response += "The battle scene may not work well with only one image.\n\n"
                 final_response += "**What would you like to do?**\n"
-                final_response += "• Type **'YES'** or **'CONTINUE'** to proceed with available images\n"
+                final_response += "• Type **'YES'** or **'CONTINUE'** to try anyway\n"
                 final_response += "• Type **'NO'** or **'CHANGE'** to try different characters"
                 
                 # Set state to wait for confirmation
@@ -249,6 +307,7 @@ class ClashOfMemesBot:
                 self.conversation_state = {
                     "waiting_for_characters": True,
                     "characters": [],
+                    "character_images": [],
                     "images_loaded": False,
                     "waiting_for_confirmation": False
                 }
@@ -256,7 +315,7 @@ class ClashOfMemesBot:
             # Update the last message in history
             history[-1][1] = final_response
             
-            return "", history, img1_url, img2_url
+            return "", history, img1_url, img2_url, None
             
         elif len(characters) == 1:
             # Only found one character
@@ -267,13 +326,13 @@ class ClashOfMemesBot:
             response += f"• 'Battle between {characters[0]} and Superman'"
             
             history.append([message, response])
-            return "", history, None, None
+            return "", history, None, None, None
             
         else:
             # No clear characters found
             response = self.get_help_message()
             history.append([message, response])
-            return "", history, None, None
+            return "", history, None, None, None
     
     def get_help_message(self) -> str:
         """Return help message for character input"""
@@ -287,7 +346,7 @@ I need you to tell me which two characters should fight!
 • "Battle between Pikachu and Sonic"
 • "Terminator versus PowerPuff Girls"
 
-**Popular characters:**
+**Popular characters that work well:**
 • Superheroes: Superman, Batman, Spider-Man, Iron Man
 • Anime: Goku, Naruto, Luffy, Saitama
 • Games: Mario, Sonic, Link, Master Chief
@@ -295,32 +354,35 @@ I need you to tell me which two characters should fight!
 
 Just tell me who should fight! 🥊"""
 
-# Initialize components outside of NO_RELOAD block for faster development
-# This will only run once when using gradio reload mode
-if gr.NO_RELOAD:
-    API_KEY = os.getenv("GOOGLE_API_KEY")
-    SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-    searcher = GoogleImageSearcher(API_KEY, SEARCH_ENGINE_ID)
-    bot = ClashOfMemesBot(searcher)
-else:
-    # For regular Python execution
-    API_KEY = os.getenv("GOOGLE_API_KEY")
-    SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-    searcher = GoogleImageSearcher(API_KEY, SEARCH_ENGINE_ID)
-    bot = ClashOfMemesBot(searcher)
+# Initialize components
+API_KEY = os.getenv("GOOGLE_API_KEY")
+SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+
+if not API_KEY or not SEARCH_ENGINE_ID:
+    print("Warning: Google API credentials not found in environment variables")
+
+searcher = GoogleImageSearcher(API_KEY, SEARCH_ENGINE_ID) if API_KEY and SEARCH_ENGINE_ID else None
+bot = ClashOfMemesBot(searcher) if searcher else None
 
 def chat_interface(message, history):
+    if not bot:
+        return "", history + [[message, "❌ Bot not initialized. Please check your API credentials."]], None, None, None
+        
     if not message.strip():
-        return "", history, None, None
+        return "", history, None, None, None
         
     return bot.process_message(message, history)
 
 # Create Gradio interface
 with gr.Blocks(title="Clash of Memes", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
-    # 🥊 Clash of Memes
-    ### Tell me which two characters should fight, and I'll find their images!
-    **🔥 Auto-reload enabled** - run with `gradio app.py` for instant updates!
+    # 🥊 Clash of Memes - Battle Scene Generator
+    ### Tell me which two characters should fight, and I'll create an epic battle scene!
+    
+    **How it works:**
+    1. Tell me two characters (e.g., "Goku vs Superman")
+    2. I'll find their images
+    3. Generate an epic AI battle scene!
     """)
     
     with gr.Row():
@@ -340,32 +402,38 @@ with gr.Blocks(title="Clash of Memes", theme=gr.themes.Soft()) as demo:
                 submit = gr.Button("Send", scale=1, variant="primary")
         
         with gr.Column(scale=1):
-            gr.Markdown("### Fighter Images")
+            gr.Markdown("### Character Images")
             with gr.Row():
                 img1 = gr.Image(label="Fighter 1", height=200)
                 img2 = gr.Image(label="Fighter 2", height=200)
+            
+            gr.Markdown("### Battle Scene")
+            battle_img = gr.Image(label="Epic Battle", height=300)
     
     # Event handlers
     def submit_message(message, history):
-        response, new_history, image1, image2 = chat_interface(message, history)
-        return "", new_history, image1, image2
+        response, new_history, image1, image2, battle_image = chat_interface(message, history)
+        return "", new_history, image1, image2, battle_image
     
     submit.click(
         submit_message,
         inputs=[msg, chatbot],
-        outputs=[msg, chatbot, img1, img2]
+        outputs=[msg, chatbot, img1, img2, battle_img]
     )
     
     msg.submit(
         submit_message,
         inputs=[msg, chatbot], 
-        outputs=[msg, chatbot, img1, img2]
+        outputs=[msg, chatbot, img1, img2, battle_img]
     )
     
     # Initialize with help message
     demo.load(
-        lambda: ([(None, bot.get_help_message())], None, None),
-        outputs=[chatbot, img1, img2]
+        lambda: (
+            bot.reset_conversation_state() or [(None, bot.get_help_message())] if bot else [(None, "❌ Bot not initialized")], 
+            None, None, None
+        ),
+        outputs=[chatbot, img1, img2, battle_img]
     )
 
 if __name__ == "__main__":
