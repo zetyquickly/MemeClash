@@ -11,6 +11,15 @@ import os
 
 load_dotenv()
 
+import requests
+import random
+from typing import Optional
+
+
+import requests
+import random
+from typing import Optional
+
 class GoogleImageSearcher:
     def __init__(self, api_key: str, search_engine_id: str):
         self.api_key = api_key
@@ -23,12 +32,9 @@ class GoogleImageSearcher:
             params = {
                 'key': self.api_key,
                 'cx': self.search_engine_id,
-                'q': f'{character_name} -text -logo -watermark',
+                'q': f'{character_name} -text -watermark',
                 'searchType': 'image',
                 'num': 1,
-                'imgSize': 'large',
-                'imgColorType': 'color',
-                'safe': 'active',
                 'rights': 'cc_publicdomain,cc_attribute,cc_sharealike'
             }
 
@@ -121,8 +127,46 @@ class ClashOfMemesBot:
             "characters": [],
             "character_images": [],
             "images_loaded": False,
-            "waiting_for_confirmation": False
+            "waiting_for_confirmation": False,
+            "battle_image_generated": False,
+            "battle_image_url": None,
+            "waiting_for_video_confirmation": False
         }
+
+    def animate_battle_scene(self, image_url: str, character_names: List[str]) -> str:
+        """Animate a battle scene between two characters using their images"""
+        try:
+            print(f"Generating battle video for {character_names}")
+            
+            def on_queue_update(update):
+                if isinstance(update, fal_client.InProgress):
+                    for log in update.logs:
+                        print(log["message"])
+
+            # Create a dynamic prompt based on character names
+            prompt = f"Epic battle scene between {character_names[0]} and {character_names[1]} in a fighting game arena. Dynamic action poses, special effects, energy blasts, dramatic lighting, cinematic composition, high quality"
+            
+            result = fal_client.subscribe(
+                "fal-ai/veo3/fast/image-to-video",
+                arguments={
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "seed": random.randint(1, 10000),
+                    "generate_audio": False
+                },
+                with_logs=True,
+                on_queue_update=on_queue_update,
+            )
+            
+            if result and result.get("video") and result["video"].get("url"):
+                return result["video"]["url"]
+            else:
+                print("No video returned from FAL API")
+                return None
+                
+        except Exception as e:
+            print(f"Error generating battle scene: {e}")
+            return None
 
     def generate_battle_scene(self, image_urls: List[str], character_names: List[str]) -> str:
         """Generate a battle scene between two characters using their images"""
@@ -136,7 +180,7 @@ class ClashOfMemesBot:
                         print(log["message"])
 
             # Create a dynamic prompt based on character names
-            prompt = f"Epic battle scene between {character_names[0]} and {character_names[1]} in a fighting game arena. Dynamic action poses, special effects, energy blasts, dramatic lighting, cinematic composition, high quality anime/comic book style"
+            prompt = f"Epic battle scene between {character_names[0]} and {character_names[1]} in a fighting game arena. Dynamic action poses, special effects, energy blasts, dramatic lighting, cinematic composition, high quality"
             
             result = fal_client.subscribe(
                 "fal-ai/nano-banana/edit",
@@ -161,10 +205,111 @@ class ClashOfMemesBot:
             print(f"Error generating battle scene: {e}")
             return None
     
-    def process_message(self, message: str, history: List) -> Tuple[str, List, Optional[str], Optional[str], Optional[str]]:
-        """Process user message and return response with images"""
+    def process_message(self, message: str, history: List) -> Tuple[str, List, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """Process user message and return response with images and video"""
         
         message_lower = message.lower().strip()
+        
+        # Check if user is responding to video confirmation prompt
+        if self.conversation_state["waiting_for_video_confirmation"]:
+            if any(word in message_lower for word in ["yes", "video", "animate", "generate", "go", "proceed", "start"]):
+                response = "🎬 **Generating Battle Video!**\n\n"
+                response += f"**{self.conversation_state['characters'][0].title()} VS {self.conversation_state['characters'][1].title()}**\n\n"
+                response += "🎥 Creating animated battle sequence...\n"
+                response += "✨ Adding motion and effects...\n"
+                response += "🔥 Bringing the fight to life...\n\n"
+                response += "⏳ **Please wait while the AI generates your battle video... (this may take a minute)**"
+                
+                # Store current images before resetting state
+                current_battle_image = self.conversation_state.get("battle_image_url")
+                current_char_images = self.conversation_state.get("character_images", [None, None])
+                char1_img = current_char_images[0] if len(current_char_images) > 0 else None
+                char2_img = current_char_images[1] if len(current_char_images) > 1 else None
+                
+                # Add to history first
+                history.append([message, response])
+                
+                # Generate battle video
+                battle_video_url = None
+                if self.conversation_state["battle_image_url"]:
+                    battle_video_url = self.animate_battle_scene(
+                        self.conversation_state["battle_image_url"],
+                        self.conversation_state["characters"]
+                    )
+                
+                if battle_video_url:
+                    final_response = "🎉 **EPIC BATTLE VIDEO READY!**\n\n"
+                    final_response += f"**{self.conversation_state['characters'][0].title()} VS {self.conversation_state['characters'][1].title()}**\n\n"
+                    final_response += "🎬 Your animated battle sequence is complete!\n"
+                    final_response += "🔥 Watch the ultimate clash come to life!\n\n"
+                    final_response += "Want another battle? Just tell me two new characters!"
+                else:
+                    final_response = "❌ **Video Generation Failed**\n\n"
+                    final_response += "Sorry, there was an issue generating the battle video.\n"
+                    final_response += "This could be due to:\n"
+                    final_response += "• API limitations\n"
+                    final_response += "• Video processing issues\n"
+                    final_response += "• Network connectivity\n\n"
+                    final_response += "The battle image is still available above!\n"
+                    final_response += "Try again or choose different characters!"
+                
+                # Update the last message in history
+                history[-1][1] = final_response
+                
+                # Reset state for new battle
+                self.conversation_state = {
+                    "waiting_for_characters": True,
+                    "characters": [],
+                    "character_images": [],
+                    "images_loaded": False,
+                    "waiting_for_confirmation": False,
+                    "battle_image_generated": False,
+                    "battle_image_url": None,
+                    "waiting_for_video_confirmation": False
+                }
+                
+                return "", history, char1_img, char2_img, current_battle_image, battle_video_url
+                
+            elif any(word in message_lower for word in ["no", "skip", "new", "different", "next"]):
+                response = "👍 **No problem!**\n\n"
+                response += "Your epic battle image is ready above!\n\n"
+                response += "Ready for a new battle? Just tell me two new characters to fight! 🥊"
+                
+                # Store current images before resetting state
+                current_battle_image = self.conversation_state.get("battle_image_url")
+                current_char_images = self.conversation_state.get("character_images", [None, None])
+                char1_img = current_char_images[0] if len(current_char_images) > 0 else None
+                char2_img = current_char_images[1] if len(current_char_images) > 1 else None
+                
+                # Reset state for new character selection
+                self.conversation_state = {
+                    "waiting_for_characters": True,
+                    "characters": [],
+                    "character_images": [],
+                    "images_loaded": False,
+                    "waiting_for_confirmation": False,
+                    "battle_image_generated": False,
+                    "battle_image_url": None,
+                    "waiting_for_video_confirmation": False
+                }
+                
+                history.append([message, response])
+                return "", history, char1_img, char2_img, current_battle_image, None
+            else:
+                # User didn't give clear yes/no, ask again
+                response = "🤔 **Please choose:**\n\n"
+                response += "• Type **'YES'** or **'VIDEO'** to generate an animated battle video\n"
+                response += "• Type **'NO'** or **'SKIP'** to keep just the image and start a new battle\n\n"
+                response += f"Current battle image: **{self.conversation_state['characters'][0].title()}** vs **{self.conversation_state['characters'][1].title()}**"
+                
+                # Preserve current images
+                current_battle_image = self.conversation_state.get("battle_image_url")
+                current_char_images = self.conversation_state.get("character_images", [None, None])
+                char1_img = current_char_images[0] if len(current_char_images) > 0 else None
+                char2_img = current_char_images[1] if len(current_char_images) > 1 else None
+                
+                history.append([message, response])
+                return "", history, char1_img, char2_img, current_battle_image, None
         
         # Check if user is responding to confirmation prompt
         if self.conversation_state["waiting_for_confirmation"]:
@@ -188,11 +333,21 @@ class ClashOfMemesBot:
                     )
                 
                 if battle_image_url:
+                    # Store the battle image URL for potential video generation
+                    self.conversation_state["battle_image_url"] = battle_image_url
+                    self.conversation_state["battle_image_generated"] = True
+                    
                     final_response = "🎉 **EPIC BATTLE GENERATED!**\n\n"
                     final_response += f"**{self.conversation_state['characters'][0].title()} VS {self.conversation_state['characters'][1].title()}**\n\n"
                     final_response += "✨ Your cinematic battle scene is ready!\n"
                     final_response += "🔥 Witness the ultimate clash!\n\n"
-                    final_response += "Want another battle? Just tell me two new characters!"
+                    final_response += "🎬 **Want to make it even more epic?**\n"
+                    final_response += "• Type **'YES'** or **'VIDEO'** to generate an animated battle video!\n"
+                    final_response += "• Type **'NO'** or **'NEW'** to start a new battle with different characters"
+                    
+                    # Set state to wait for video confirmation
+                    self.conversation_state["waiting_for_confirmation"] = False
+                    self.conversation_state["waiting_for_video_confirmation"] = True
                 else:
                     final_response = "❌ **Battle Generation Failed**\n\n"
                     final_response += "Sorry, there was an issue generating the battle scene.\n"
@@ -201,21 +356,23 @@ class ClashOfMemesBot:
                     final_response += "• Image processing issues\n"
                     final_response += "• Network connectivity\n\n"
                     final_response += "Try again with the same or different characters!"
+                    
+                    # Reset state for new battle
+                    self.conversation_state = {
+                        "waiting_for_characters": True,
+                        "characters": [],
+                        "character_images": [],
+                        "images_loaded": False,
+                        "waiting_for_confirmation": False,
+                        "battle_image_generated": False,
+                        "battle_image_url": None,
+                        "waiting_for_video_confirmation": False
+                    }
                 
                 # Update the last message in history
                 history[-1][1] = final_response
                 
-                # Reset state for new battle
-                self.conversation_state = {
-                    "waiting_for_characters": True,
-                    "characters": [],
-                    "character_images": [],
-                    "images_loaded": False,
-                    "waiting_for_confirmation": False
-                }
-                
-                # Safely return character images - they should be None after reset
-                return "", history, None, None, battle_image_url
+                return "", history, None, None, battle_image_url, None
                 
             elif any(word in message_lower for word in ["no", "change", "different", "other", "new"]):
                 response = "🔄 **Choose New Fighters!**\n\n"
@@ -228,11 +385,14 @@ class ClashOfMemesBot:
                     "characters": [],
                     "character_images": [],
                     "images_loaded": False,
-                    "waiting_for_confirmation": False
+                    "waiting_for_confirmation": False,
+                    "battle_image_generated": False,
+                    "battle_image_url": None,
+                    "waiting_for_video_confirmation": False
                 }
                 
                 history.append([message, response])
-                return "", history, None, None, None
+                return "", history, None, None, None, None
             else:
                 # User didn't give clear yes/no, ask again
                 response = "🤔 **Please choose:**\n\n"
@@ -241,7 +401,7 @@ class ClashOfMemesBot:
                 response += f"Current fighters: **{self.conversation_state['characters'][0].title()}** vs **{self.conversation_state['characters'][1].title()}**"
                 
                 history.append([message, response])
-                return "", history, None, None, None
+                return "", history, None, None, None, None
         
         # Extract characters from message
         characters = self.extractor.extract_characters(message)
@@ -309,13 +469,16 @@ class ClashOfMemesBot:
                     "characters": [],
                     "character_images": [],
                     "images_loaded": False,
-                    "waiting_for_confirmation": False
+                    "waiting_for_confirmation": False,
+                    "battle_image_generated": False,
+                    "battle_image_url": None,
+                    "waiting_for_video_confirmation": False
                 }
             
             # Update the last message in history
             history[-1][1] = final_response
             
-            return "", history, img1_url, img2_url, None
+            return "", history, img1_url, img2_url, None, None
             
         elif len(characters) == 1:
             # Only found one character
@@ -326,13 +489,13 @@ class ClashOfMemesBot:
             response += f"• 'Battle between {characters[0]} and Superman'"
             
             history.append([message, response])
-            return "", history, None, None, None
+            return "", history, None, None, None, None
             
         else:
             # No clear characters found
             response = self.get_help_message()
             history.append([message, response])
-            return "", history, None, None, None
+            return "", history, None, None, None, None
     
     def get_help_message(self) -> str:
         """Return help message for character input"""
@@ -357,6 +520,7 @@ Just tell me who should fight! 🥊"""
 # Initialize components
 API_KEY = os.getenv("GOOGLE_API_KEY")
 SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 if not API_KEY or not SEARCH_ENGINE_ID:
     print("Warning: Google API credentials not found in environment variables")
@@ -366,10 +530,10 @@ bot = ClashOfMemesBot(searcher) if searcher else None
 
 def chat_interface(message, history):
     if not bot:
-        return "", history + [[message, "❌ Bot not initialized. Please check your API credentials."]], None, None, None
+        return "", history + [[message, "❌ Bot not initialized. Please check your API credentials."]], None, None, None, None
         
     if not message.strip():
-        return "", history, None, None, None
+        return "", history, None, None, None, None
         
     return bot.process_message(message, history)
 
@@ -377,12 +541,13 @@ def chat_interface(message, history):
 with gr.Blocks(title="Clash of Memes", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
     # 🥊 Clash of Memes - Battle Scene Generator
-    ### Tell me which two characters should fight, and I'll create an epic battle scene!
+    ### Tell me which two characters should fight, and I'll create an epic battle scene AND video!
     
     **How it works:**
     1. Tell me two characters (e.g., "Goku vs Superman")
     2. I'll find their images
     3. Generate an epic AI battle scene!
+    4. Optionally create an animated battle video!
     """)
     
     with gr.Row():
@@ -400,40 +565,45 @@ with gr.Blocks(title="Clash of Memes", theme=gr.themes.Soft()) as demo:
                     scale=7
                 )
                 submit = gr.Button("Send", scale=1, variant="primary")
+            
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("### Battle Scene")
+                    battle_img = gr.Image(label="Epic Battle", height=400)
+                with gr.Column(scale=1):
+                    gr.Markdown("### Battle Video")
+                    battle_video = gr.Video(label="Animated Battle", height=400)
         
         with gr.Column(scale=1):
             gr.Markdown("### Character Images")
             with gr.Row():
                 img1 = gr.Image(label="Fighter 1", height=200)
                 img2 = gr.Image(label="Fighter 2", height=200)
-            
-            gr.Markdown("### Battle Scene")
-            battle_img = gr.Image(label="Epic Battle", height=300)
     
     # Event handlers
     def submit_message(message, history):
-        response, new_history, image1, image2, battle_image = chat_interface(message, history)
-        return "", new_history, image1, image2, battle_image
+        response, new_history, image1, image2, battle_image, video = chat_interface(message, history)
+        return "", new_history, image1, image2, battle_image, video
     
     submit.click(
         submit_message,
         inputs=[msg, chatbot],
-        outputs=[msg, chatbot, img1, img2, battle_img]
+        outputs=[msg, chatbot, img1, img2, battle_img, battle_video]
     )
     
     msg.submit(
         submit_message,
         inputs=[msg, chatbot], 
-        outputs=[msg, chatbot, img1, img2, battle_img]
+        outputs=[msg, chatbot, img1, img2, battle_img, battle_video]
     )
     
     # Initialize with help message
     demo.load(
         lambda: (
             bot.reset_conversation_state() or [(None, bot.get_help_message())] if bot else [(None, "❌ Bot not initialized")], 
-            None, None, None
+            None, None, None, None
         ),
-        outputs=[chatbot, img1, img2, battle_img]
+        outputs=[chatbot, img1, img2, battle_img, battle_video]
     )
 
 if __name__ == "__main__":
