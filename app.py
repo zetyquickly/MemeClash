@@ -135,7 +135,7 @@ class ImageProcessor:
             return None
 
 class BattleCache:
-    """Cache system for battle scenes and videos"""
+    """Cache system for battle scenes, videos and character images"""
     
     def __init__(self, cache_file: str = "battle_cache.pkl"):
         self.cache_file = Path(cache_file)
@@ -146,7 +146,21 @@ class BattleCache:
         try:
             if self.cache_file.exists():
                 with open(self.cache_file, 'rb') as f:
-                    return pickle.load(f)
+                    cache_data = pickle.load(f)
+                    # Handle backward compatibility with old cache format
+                    if cache_data and isinstance(list(cache_data.values())[0], tuple):
+                        print("Converting old cache format to new format...")
+                        new_cache = {}
+                        for key, value in cache_data.items():
+                            if isinstance(value, tuple) and len(value) == 2:
+                                battle_img, battle_video = value
+                                new_cache[key] = {
+                                    "character_images": [None, None],
+                                    "battle_image": battle_img,
+                                    "battle_video": battle_video
+                                }
+                        return new_cache
+                    return cache_data
         except Exception as e:
             print(f"Error loading cache: {e}")
         return {}
@@ -165,25 +179,46 @@ class BattleCache:
         sorted_chars = sorted([char.lower().strip() for char in characters])
         return tuple(sorted_chars)
     
-    def get(self, characters: List[str]) -> Optional[Tuple[Optional[str], Optional[str]]]:
-        """Get cached battle scene and video URLs"""
+    def get(self, characters: List[str]) -> Optional[dict]:
+        """Get cached character images, battle scene and video URLs"""
         key = self._make_key(characters)
-        return self.cache.get(key)
+        cached_data = self.cache.get(key)
+        if cached_data:
+            # Ensure we return the expected structure
+            return {
+                "character_images": cached_data.get("character_images", [None, None]),
+                "battle_image": cached_data.get("battle_image"),
+                "battle_video": cached_data.get("battle_video")
+            }
+        return None
     
-    def set_image(self, characters: List[str], battle_img_url: str):
-        """Cache battle image"""
+    def set_image(self, characters: List[str], character_images: List[Optional[str]], battle_img_url: str):
+        """Cache character images and battle image"""
         key = self._make_key(characters)
-        current = self.cache.get(key, (None, None))
-        self.cache[key] = (battle_img_url, current[1])  # Keep existing video if any
+        current = self.cache.get(key, {
+            "character_images": [None, None],
+            "battle_image": None,
+            "battle_video": None
+        })
+        
+        self.cache[key] = {
+            "character_images": character_images[:2] if character_images else [None, None],  # Ensure we only store 2 images
+            "battle_image": battle_img_url,
+            "battle_video": current.get("battle_video")  # Keep existing video if any
+        }
         self._save_cache()
-        print(f"Cached battle image for {characters}")
+        print(f"Cached character images and battle image for {characters}")
     
-    def set_video(self, characters: List[str], battle_img_url: str, battle_video_url: str):
-        """Cache both battle image and video"""
+    def set_video(self, characters: List[str], character_images: List[Optional[str]], battle_img_url: str, battle_video_url: str):
+        """Cache character images, battle image and video"""
         key = self._make_key(characters)
-        self.cache[key] = (battle_img_url, battle_video_url)
+        self.cache[key] = {
+            "character_images": character_images[:2] if character_images else [None, None],  # Ensure we only store 2 images
+            "battle_image": battle_img_url,
+            "battle_video": battle_video_url
+        }
         self._save_cache()
-        print(f"Cached battle image and video for {characters}")
+        print(f"Cached character images, battle image and video for {characters}")
     
     def clear_cache(self):
         """Clear all cache"""
@@ -445,9 +480,10 @@ class ClashOfMemesBot:
                     )
                 
                 if battle_video_url:
-                    # Cache both image and video
+                    # Cache both image and video with character images
                     self.cache.set_video(
                         self.conversation_state["characters"],
+                        self.conversation_state["character_images"],
                         self.conversation_state["battle_image_url"],
                         battle_video_url
                     )
@@ -531,8 +567,12 @@ class ClashOfMemesBot:
                     )
                 
                 if battle_image_url:
-                    # Cache the image
-                    self.cache.set_image(self.conversation_state["characters"], battle_image_url)
+                    # Cache the image with character images
+                    self.cache.set_image(
+                        self.conversation_state["characters"], 
+                        self.conversation_state["character_images"],
+                        battle_image_url
+                    )
                     
                     # Store the battle image URL for potential video generation
                     self.conversation_state["battle_image_url"] = battle_image_url
@@ -600,7 +640,7 @@ class ClashOfMemesBot:
                 
                 if battle_image_url:
                     # Cache the new image
-                    self.cache.set_image(self.conversation_state["characters"], battle_image_url)
+                    self.cache.set_image(self.conversation_state["characters"], self.conversation_state["character_images"], battle_image_url)
                     
                     # Store the battle image URL for potential video generation
                     self.conversation_state["battle_image_url"] = battle_image_url
@@ -669,9 +709,11 @@ class ClashOfMemesBot:
                 cached_result = self.cache.get([char1, char2])
             
             if cached_result:
-                cached_img, cached_video = cached_result
+                cached_char_images = cached_result.get("character_images", [None, None])
+                cached_battle_img = cached_result.get("battle_image")
+                cached_battle_video = cached_result.get("battle_video")
                 
-                if cached_img and cached_video:
+                if cached_battle_img and cached_battle_video:
                     # Both image and video cached
                     response = f"💾 **Found in Cache!**\n\n"
                     response += f"**{char1.title()} VS {char2.title()}**\n\n"
@@ -680,15 +722,15 @@ class ClashOfMemesBot:
                     response += "Want another battle? Just tell me two new characters!"
                     
                     # Set up state
-                    self.conversation_state["battle_image_url"] = cached_img
+                    self.conversation_state["battle_image_url"] = cached_battle_img
                     self.conversation_state["battle_image_generated"] = True
                     
                     history.append([message, response])
                     # Reset for next battle
                     self.reset_conversation_state()
-                    return "", history, None, None, cached_img, cached_video
+                    return "", history, cached_char_images[0], cached_char_images[1], cached_battle_img, cached_battle_video
                     
-                elif cached_img:
+                elif cached_battle_img:
                     # Only image cached
                     response = f"💾 **Found Battle Image in Cache!**\n\n"
                     response += f"**{char1.title()} VS {char2.title()}**\n\n"
@@ -700,12 +742,13 @@ class ClashOfMemesBot:
                     response += "• Type **'NO'** or **'NEW'** to start a new battle with different characters"
                     
                     # Set up state for video confirmation
-                    self.conversation_state["battle_image_url"] = cached_img
+                    self.conversation_state["battle_image_url"] = cached_battle_img
                     self.conversation_state["battle_image_generated"] = True
                     self.conversation_state["waiting_for_video_confirmation"] = True
+                    self.conversation_state["character_images"] = cached_char_images
                     
                     history.append([message, response])
-                    return "", history, None, None, cached_img, None
+                    return "", history, cached_char_images[0], cached_char_images[1], cached_battle_img, None
             
             # No cache hit or force regenerate requested
             response = f"🥊 **Battle Setup Detected!**\n\n"
@@ -791,7 +834,7 @@ class ClashOfMemesBot:
     
     def get_help_message(self) -> str:
         """Return help message for character input"""
-        return """🤖 **Welcome to Clash of Memes!**
+        return """🤖 **Welcome to Meme Clash!**
 
 I need you to tell me which two characters should fight! 
 
@@ -839,9 +882,9 @@ def chat_interface(message, history):
     return bot.process_message(message, history)
 
 # Create Gradio interface
-with gr.Blocks(title="Clash of Memes", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Meme Clash", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
-    # 🥊 Clash of Memes - Battle Scene Generator
+    # 🥊 Meme Clash - Battle Scene Generator
     ### Tell me which two characters should fight, and I'll create an epic battle scene AND video!
     
     **How it works:**
